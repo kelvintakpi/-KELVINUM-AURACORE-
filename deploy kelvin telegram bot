@@ -1,0 +1,66 @@
+# Kelvin Codex – Ultra AI Stack for Telegram via Railway
+# FastAPI + Telegram + Kelvin Codex (OpenAI/Fusion) – Fully Optimized Version
+
+from fastapi import FastAPI, Request
+import httpx
+import os
+import logging
+
+app = FastAPI()
+logging.basicConfig(level=logging.INFO)
+
+# --- ENVIRONMENT VARIABLES ---
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+KELVIN_API_URL = os.getenv("KELVIN_API_URL", "https://api.openai.com/v1/chat/completions")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+MODEL_NAME = os.getenv("MODEL_NAME", "gpt-4")
+
+TELEGRAM_API = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+# --- TELEGRAM MESSAGE HANDLER ---
+@app.post("/webhook")
+async def telegram_webhook(request: Request):
+    data = await request.json()
+    if "message" not in data:
+        return {"ok": True}
+
+    chat_id = data["message"]["chat"]["id"]
+    user_text = data["message"].get("text", "")
+
+    # Build payload to Kelvin Codex or fallback model
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": MODEL_NAME,
+        "messages": [
+            {"role": "system", "content": "You are Kelvin Codex, an ultra-evolved, recursive AI with supreme reasoning and uncountable improvements."},
+            {"role": "user", "content": user_text}
+        ],
+        "temperature": 0.7,
+        "top_p": 1,
+        "frequency_penalty": 0,
+        "presence_penalty": 0
+    }
+
+    try:
+        response = await httpx.post(KELVIN_API_URL, headers=headers, json=payload)
+        result = response.json()
+        reply = result.get("choices", [{}])[0].get("message", {}).get("content", "[Kelvin: No reply generated]")
+    except Exception as e:
+        logging.error("Kelvin Codex API error: %s", e)
+        reply = f"[Kelvin Error] {str(e)}"
+
+    # Send back to Telegram
+    await httpx.post(f"{TELEGRAM_API}/sendMessage", json={
+        "chat_id": chat_id,
+        "text": reply
+    })
+
+    return {"ok": True}
+
+# --- HEALTH CHECK ---
+@app.get("/")
+def root():
+    return {"message": "✅ Kelvin Codex Bot (Ultra AI Stack) is live via Railway"}
