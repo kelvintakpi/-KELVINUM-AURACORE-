@@ -1,0 +1,436 @@
+# backend/quantum_algorithms.py
+
+import numpy as np
+import cirq
+from typing import List, Dict, Any, Optional, Tuple
+import logging
+from abc import ABC, abstractmethod
+
+logger = logging.getLogger(__name__)
+
+class QuantumAlgorithm(ABC):
+    """Base class for quantum algorithms."""
+    
+    @abstractmethod
+    def create_circuit(self, **kwargs) -> cirq.Circuit:
+        pass
+    
+    @abstractmethod
+    def analyze_results(self, result: cirq.Result) -> Dict[str, Any]:
+        pass
+
+class QuantumFourierTransform(QuantumAlgorithm):
+    """Quantum Fourier Transform implementation."""
+    
+    def __init__(self, n_qubits: int):
+        self.n_qubits = n_qubits
+        self.qubits = cirq.LineQubit.range(n_qubits)
+    
+    def create_circuit(self, input_state: Optional[List[int]] = None) -> cirq.Circuit:
+        """Create QFT circuit with optional input state preparation."""
+        circuit = cirq.Circuit()
+        
+        # Prepare input state if provided
+        if input_state:
+            for i, bit in enumerate(input_state):
+                if bit == 1:
+                    circuit.append(cirq.X(self.qubits[i]))
+        
+        # QFT implementation
+        for i in range(self.n_qubits):
+            circuit.append(cirq.H(self.qubits[i]))
+            for j in range(i + 1, self.n_qubits):
+                circuit.append(cirq.CZ(self.qubits[j], self.qubits[i]) ** (1.0 / 2**(j-i)))
+        
+        # Reverse qubit order (bit reversal)
+        for i in range(self.n_qubits // 2):
+            circuit.append(cirq.SWAP(self.qubits[i], self.qubits[self.n_qubits - 1 - i]))
+        
+        # Add measurements
+        circuit.append(cirq.measure(*self.qubits, key='qft_result'))
+        
+        return circuit
+    
+    def analyze_results(self, result: cirq.Result) -> Dict[str, Any]:
+        """Analyze QFT results and extract frequency domain information."""
+        measurements = result.measurements['qft_result']
+        
+        # Convert binary measurements to decimal
+        decimal_results = []
+        for measurement in measurements:
+            decimal_val = sum(bit * (2 ** i) for i, bit in enumerate(reversed(measurement)))
+            decimal_results.append(decimal_val)
+        
+        # Calculate frequency distribution
+        unique_vals, counts = np.unique(decimal_results, return_counts=True)
+        probabilities = counts / len(decimal_results)
+        
+        return {
+            'algorithm': 'Quantum Fourier Transform',
+            'n_qubits': self.n_qubits,
+            'decimal_results': decimal_results,
+            'frequency_distribution': {
+                'values': unique_vals.tolist(),
+                'counts': counts.tolist(),
+                'probabilities': probabilities.tolist()
+            },
+            'dominant_frequency': unique_vals[np.argmax(counts)],
+            'entropy': -np.sum(probabilities * np.log2(probabilities + 1e-10))
+        }
+
+class VariationalQuantumEigensolver(QuantumAlgorithm):
+    """Simplified VQE for finding ground state energies."""
+    
+    def __init__(self, n_qubits: int, depth: int = 2):
+        self.n_qubits = n_qubits
+        self.depth = depth
+        self.qubits = cirq.LineQubit.range(n_qubits)
+        self.params = np.random.uniform(0, 2*np.pi, size=(depth, n_qubits, 2))
+    
+    def create_circuit(self, params: Optional[np.ndarray] = None) -> cirq.Circuit:
+        """Create parameterized VQE ansatz circuit."""
+        if params is not None:
+            self.params = params
+        
+        circuit = cirq.Circuit()
+        
+        # Initial state preparation
+        for qubit in self.qubits:
+            circuit.append(cirq.H(qubit))
+        
+        # Parameterized layers
+        for layer in range(self.depth):
+            # Rotation gates
+            for i, qubit in enumerate(self.qubits):
+                circuit.append(cirq.ry(self.params[layer, i, 0]).on(qubit))
+                circuit.append(cirq.rz(self.params[layer, i, 1]).on(qubit))
+            
+            # Entangling gates
+            for i in range(self.n_qubits - 1):
+                circuit.append(cirq.CNOT(self.qubits[i], self.qubits[i + 1]))
+        
+        # Measurements
+        circuit.append(cirq.measure(*self.qubits, key='vqe_result'))
+        
+        return circuit
+    
+    def analyze_results(self, result: cirq.Result) -> Dict[str, Any]:
+        """Analyze VQE results and estimate energy."""
+        measurements = result.measurements['vqe_result']
+        
+        # Simple Hamiltonian: H = sum(Z_i) + sum(Z_i * Z_{i+1})
+        energies = []
+        for measurement in measurements:
+            # Convert 0,1 to +1,-1 for Z measurements
+            z_vals = [1 if bit == 0 else -1 for bit in measurement]
+            
+            # Calculate energy expectation
+            energy = sum(z_vals)  # Single qubit terms
+            energy += sum(z_vals[i] * z_vals[i+1] for i in range(len(z_vals)-1))  # Interaction terms
+            energies.append(energy)
+        
+        mean_energy = np.mean(energies)
+        std_energy = np.std(energies)
+        
+        return {
+            'algorithm': 'Variational Quantum Eigensolver',
+            'n_qubits': self.n_qubits,
+            'depth': self.depth,
+            'estimated_energy': mean_energy,
+            'energy_std': std_energy,
+            'energy_samples': energies,
+            'min_energy': min(energies),
+            'max_energy': max(energies),
+            'parameter_count': self.params.size
+        }
+
+class QuantumApproximateOptimization(QuantumAlgorithm):
+    """QAOA for solving optimization problems."""
+    
+    def __init__(self, n_qubits: int, problem_graph: List[Tuple[int, int]], p: int = 1):
+        self.n_qubits = n_qubits
+        self.problem_graph = problem_graph  # List of edges for Max-Cut problem
+        self.p = p  # Number of QAOA layers
+        self.qubits = cirq.LineQubit.range(n_qubits)
+        self.gamma = np.random.uniform(0, 2*np.pi, p)
+        self.beta = np.random.uniform(0, np.pi, p)
+    
+    def create_circuit(self, gamma: Optional[np.ndarray] = None, beta: Optional[np.ndarray] = None) -> cirq.Circuit:
+        """Create QAOA circuit for Max-Cut problem."""
+        if gamma is not None:
+            self.gamma = gamma
+        if beta is not None:
+            self.beta = beta
+        
+        circuit = cirq.Circuit()
+        
+        # Initial superposition
+        for qubit in self.qubits:
+            circuit.append(cirq.H(qubit))
+        
+        # QAOA layers
+        for layer in range(self.p):
+            # Problem Hamiltonian (Cost function)
+            for edge in self.problem_graph:
+                i, j = edge
+                if i < self.n_qubits and j < self.n_qubits:
+                    circuit.append(cirq.CNOT(self.qubits[i], self.qubits[j]))
+                    circuit.append(cirq.rz(self.gamma[layer]).on(self.qubits[j]))
+                    circuit.append(cirq.CNOT(self.qubits[i], self.qubits[j]))
+            
+            # Mixer Hamiltonian
+            for qubit in self.qubits:
+                circuit.append(cirq.rx(self.beta[layer]).on(qubit))
+        
+        # Measurements
+        circuit.append(cirq.measure(*self.qubits, key='qaoa_result'))
+        
+        return circuit
+    
+    def analyze_results(self, result: cirq.Result) -> Dict[str, Any]:
+        """Analyze QAOA results and evaluate cut values."""
+        measurements = result.measurements['qaoa_result']
+        
+        cut_values = []
+        for measurement in measurements:
+            cut_value = 0
+            for edge in self.problem_graph:
+                i, j = edge
+                if i < len(measurement) and j < len(measurement):
+                    if measurement[i] != measurement[j]:  # Different partitions
+                        cut_value += 1
+            cut_values.append(cut_value)
+        
+        max_cut = max(cut_values)
+        mean_cut = np.mean(cut_values)
+        
+        # Find best partition
+        best_idx = cut_values.index(max_cut)
+        best_partition = measurements[best_idx].tolist()
+        
+        return {
+            'algorithm': 'Quantum Approximate Optimization Algorithm',
+            'n_qubits': self.n_qubits,
+            'p_layers': self.p,
+            'problem_edges': len(self.problem_graph),
+            'cut_values': cut_values,
+            'max_cut_value': max_cut,
+            'mean_cut_value': mean_cut,
+            'best_partition': best_partition,
+            'approximation_ratio': max_cut / len(self.problem_graph) if self.problem_graph else 0
+        }
+
+class QuantumTeleportation(QuantumAlgorithm):
+    """Quantum teleportation protocol implementation."""
+    
+    def __init__(self):
+        self.qubits = cirq.LineQubit.range(3)  # Alice's qubit, Bell pair (Alice, Bob)
+        self.alice_state = self.qubits[0]
+        self.alice_bell = self.qubits[1]
+        self.bob_bell = self.qubits[2]
+    
+    def create_circuit(self, initial_state: str = "plus") -> cirq.Circuit:
+        """Create quantum teleportation circuit."""
+        circuit = cirq.Circuit()
+        
+        # Prepare initial state to teleport
+        if initial_state == "plus":
+            circuit.append(cirq.H(self.alice_state))
+        elif initial_state == "minus":
+            circuit.append(cirq.X(self.alice_state))
+            circuit.append(cirq.H(self.alice_state))
+        elif initial_state == "zero":
+            pass  # Already in |0⟩
+        elif initial_state == "one":
+            circuit.append(cirq.X(self.alice_state))
+        
+        # Create Bell pair between Alice and Bob
+        circuit.append(cirq.H(self.alice_bell))
+        circuit.append(cirq.CNOT(self.alice_bell, self.bob_bell))
+        
+        # Bell measurement on Alice's qubits
+        circuit.append(cirq.CNOT(self.alice_state, self.alice_bell))
+        circuit.append(cirq.H(self.alice_state))
+        
+        # Measure Alice's qubits
+        circuit.append(cirq.measure(self.alice_state, key='alice_qubit'))
+        circuit.append(cirq.measure(self.alice_bell, key='alice_bell'))
+        
+        # Classical communication and correction (simplified)
+        # In practice, these would be conditional on measurement results
+        circuit.append(cirq.CNOT(self.alice_bell, self.bob_bell))
+        circuit.append(cirq.CZ(self.alice_state, self.bob_bell))
+        
+        # Measure Bob's qubit
+        circuit.append(cirq.measure(self.bob_bell, key='bob_result'))
+        
+        return circuit
+    
+    def analyze_results(self, result: cirq.Result) -> Dict[str, Any]:
+        """Analyze teleportation results."""
+        alice_qubit = result.measurements['alice_qubit'].flatten()
+        alice_bell = result.measurements['alice_bell'].flatten()
+        bob_result = result.measurements['bob_result'].flatten()
+        
+        # Calculate teleportation fidelity (simplified)
+        total_runs = len(bob_result)
+        
+        return {
+            'algorithm': 'Quantum Teleportation',
+            'total_runs': total_runs,
+            'alice_measurements': {
+                'qubit': alice_qubit.tolist(),
+                'bell': alice_bell.tolist()
+            },
+            'bob_measurements': bob_result.tolist(),
+            'teleportation_outcomes': {
+                'success_rate': np.mean(bob_result),  # Simplified metric
+                'classical_correlation': np.corrcoef(alice_qubit, bob_result)[0,1] if total_runs > 1 else 0
+            }
+        }
+
+class ShorFactorization(QuantumAlgorithm):
+    """Simplified Shor's algorithm components."""
+    
+    def __init__(self, n: int = 15):
+        self.n = n  # Number to factor
+        self.n_qubits = max(4, int(np.ceil(np.log2(n))) + 2)
+        self.qubits = cirq.LineQubit.range(self.n_qubits)
+    
+    def create_circuit(self, a: int = 2) -> cirq.Circuit:
+        """Create simplified Shor's algorithm circuit."""
+        circuit = cirq.Circuit()
+        
+        # Initialize superposition in first register
+        for i in range(self.n_qubits // 2):
+            circuit.append(cirq.H(self.qubits[i]))
+        
+        # Simplified modular exponentiation (quantum part)
+        # This is a simplified version - real Shor's would need proper modular arithmetic
+        for i in range(self.n_qubits // 2):
+            for j in range(self.n_qubits // 2, self.n_qubits):
+                if (i + j) % 2 == 0:  # Simplified control logic
+                    circuit.append(cirq.CNOT(self.qubits[i], self.qubits[j]))
+        
+        # Inverse QFT on first register (simplified)
+        for i in range(self.n_qubits // 2):
+            circuit.append(cirq.H(self.qubits[i]))
+            for j in range(i + 1, self.n_qubits // 2):
+                circuit.append(cirq.CZ(self.qubits[j], self.qubits[i]) ** (-1.0 / 2**(j-i)))
+        
+        # Measurements
+        circuit.append(cirq.measure(*self.qubits, key='shor_result'))
+        
+        return circuit
+    
+    def analyze_results(self, result: cirq.Result) -> Dict[str, Any]:
+        """Analyze Shor's algorithm results."""
+        measurements = result.measurements['shor_result']
+        
+        # Extract period candidates from measurements
+        first_register = measurements[:, :self.n_qubits//2]
+        periods = []
+        
+        for measurement in first_register:
+            decimal_val = sum(bit * (2 ** i) for i, bit in enumerate(reversed(measurement)))
+            if decimal_val > 0:
+                period_candidate = (2 ** (self.n_qubits//2)) // decimal_val
+                periods.append(period_candidate)
+        
+        # Find most common period
+        if periods:
+            unique_periods, counts = np.unique(periods, return_counts=True)
+            most_likely_period = unique_periods[np.argmax(counts)]
+        else:
+            most_likely_period = 1
+        
+        return {
+            'algorithm': "Shor's Factorization",
+            'number_to_factor': self.n,
+            'n_qubits': self.n_qubits,
+            'period_candidates': periods,
+            'most_likely_period': most_likely_period,
+            'measurement_distribution': {
+                'unique_periods': unique_periods.tolist() if periods else [],
+                'counts': counts.tolist() if periods else []
+            }
+        }
+
+# Factory function for creating algorithms
+def create_quantum_algorithm(algorithm_type: str, **kwargs) -> QuantumAlgorithm:
+    """Factory function to create quantum algorithms."""
+    algorithms = {
+        'qft': QuantumFourierTransform,
+        'vqe': VariationalQuantumEigensolver,
+        'qaoa': QuantumApproximateOptimization,
+        'teleportation': QuantumTeleportation,
+        'shor': ShorFactorization
+    }
+    
+    if algorithm_type not in algorithms:
+        raise ValueError(f"Unknown algorithm type: {algorithm_type}")
+    
+    return algorithms[algorithm_type](**kwargs)
+
+# Advanced circuit analysis functions
+def calculate_circuit_fidelity(circuit1: cirq.Circuit, circuit2: cirq.Circuit, 
+                              repetitions: int = 1000) -> float:
+    """Calculate fidelity between two quantum circuits."""
+    simulator = cirq.Simulator()
+    
+    # Get final states (simplified - assumes pure states)
+    try:
+        result1 = simulator.simulate(circuit1.without_measurements())
+        result2 = simulator.simulate(circuit2.without_measurements())
+        
+        # Calculate state fidelity
+        fidelity = abs(np.vdot(result1.final_state_vector, result2.final_state_vector)) ** 2
+        return float(fidelity)
+    except:
+        # Fallback to measurement-based fidelity
+        result1 = simulator.run(circuit1, repetitions=repetitions)
+        result2 = simulator.run(circuit2, repetitions=repetitions)
+        
+        # Simple overlap-based fidelity
+        overlap = 0
+        for key in result1.measurements:
+            if key in result2.measurements:
+                overlap += np.mean(result1.measurements[key] == result2.measurements[key])
+        
+        return overlap / len(result1.measurements) if result1.measurements else 0.0
+
+def analyze_quantum_entanglement(measurements: Dict[str, np.ndarray]) -> Dict[str, float]:
+    """Analyze entanglement in quantum measurements."""
+    entanglement_measures = {}
+    
+    # Calculate mutual information between qubit pairs
+    qubit_keys = list(measurements.keys())
+    for i in range(len(qubit_keys)):
+        for j in range(i + 1, len(qubit_keys)):
+            key1, key2 = qubit_keys[i], qubit_keys[j]
+            
+            # Calculate joint probabilities
+            joint_outcomes = list(zip(measurements[key1].flatten(), measurements[key2].flatten()))
+            unique_joint, joint_counts = np.unique(joint_outcomes, axis=0, return_counts=True)
+            joint_probs = joint_counts / len(joint_outcomes)
+            
+            # Calculate marginal probabilities
+            unique1, counts1 = np.unique(measurements[key1], return_counts=True)
+            probs1 = counts1 / len(measurements[key1].flatten())
+            
+            unique2, counts2 = np.unique(measurements[key2], return_counts=True)
+            probs2 = counts2 / len(measurements[key2].flatten())
+            
+            # Calculate mutual information
+            mutual_info = 0
+            for idx, (outcome1, outcome2) in enumerate(unique_joint):
+                p_joint = joint_probs[idx]
+                p1 = probs1[outcome1] if outcome1 < len(probs1) else 1e-10
+                p2 = probs2[outcome2] if outcome2 < len(probs2) else 1e-10
+                
+                if p_joint > 0 and p1 > 0 and p2 > 0:
+                    mutual_info += p_joint * np.log2(p_joint / (p1 * p2))
+            
+            entanglement_measures[f"{key1}_{key2}_mutual_info"] = mutual_info
+    
+    return entanglement_measures
